@@ -276,6 +276,22 @@ class ProcessTests(unittest.TestCase):
                 stream.write(json.dumps({"type": "session_info", "name": ""}) + "\n")
             self.assertEqual(launcher.session_title(["--session", "exact-id"], env), (None, False))
 
+    def test_malformed_optional_title_caches_do_not_change_launch(self):
+        cache = self.root / ".local/share/pi-lazy/titles.json"
+        cache.parent.mkdir(parents=True)
+        cases = ["not-json", "[]", '{"exact-id": []}', "[" * 2000 + "0" + "]" * 2000]
+        with patch.dict(os.environ, HOME=str(self.root)):
+            for content in cases:
+                with self.subTest(content=content[:40]):
+                    cache.write_text(content)
+                    self.assertEqual(launcher.session_title(["--session", "exact-id"], self.env), (None, False))
+        self.state(True)
+        self.start(["--session", "exact-id"])
+        assert self.child is not None
+        self.assertEqual(self.child.wait(timeout=5), 0)
+        self.assertEqual(json.loads((self.root / "launched.json").read_text())["args"],
+                         ["--session", "exact-id"])
+
     def test_custom_session_directory_and_terminal_safe_titles(self):
         session = self.root / "custom/date_exact-id.jsonl"
         session.parent.mkdir()

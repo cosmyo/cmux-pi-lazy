@@ -116,7 +116,7 @@ def session_title(args, env):
                 return None, False
             title = clean_title(cached.get("title"))
             return title, bool(title)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         pass  # Optional display metadata must not prevent an otherwise valid launch.
     return None, False
 

@@ -2,6 +2,8 @@
 # Install without modifying cmux, Pi, or any existing terminal process.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bin="$HOME/.local/bin"
+data="$HOME/.local/share/pi-lazy"
 real_pi="$HOME/.pi/agent/bin/pi"
 if [ "$#" -ne 0 ]; then
     if [ "$#" -ne 2 ] || [ "$1" != '--pi' ]; then
@@ -15,14 +17,24 @@ if [ ! -f "$real_pi" ] || [ ! -x "$real_pi" ]; then
     printf 'Pi is not executable at %s. Use --pi with its real path.\n' "$real_pi" >&2
     exit 1
 fi
-/usr/bin/python3 - "$real_pi" "$HOME/.local/bin/pi-lazy" <<'PY'
+real_pi=$(/usr/bin/python3 - "$real_pi" "$bin" "$data" <<'PY'
 from pathlib import Path
 import sys
-if Path(sys.argv[1]).resolve() == Path(sys.argv[2]).resolve():
-    raise SystemExit('Refusing to configure pi-lazy as its own real Pi launcher.')
+real = Path(sys.argv[1]).resolve(strict=True)
+bin_dir, data_dir = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+replaced = {bin_dir / 'pi', bin_dir / 'pi-lazy', data_dir / 'launcher.py'}
+if real in replaced or real == (bin_dir / 'pi-lazy').resolve():
+    raise SystemExit('Refusing a real Pi target that installation replaces or makes recursive.')
+if 'cmux-cli-shims' in real.parts:
+    raise SystemExit('Select the original Pi executable, not a generated cmux shim.')
+print(real)
 PY
-bin="$HOME/.local/bin"
-data="$HOME/.local/share/pi-lazy"
+)
+if [ -f "$data/original-pi-backup" ] &&
+   { [ ! -L "$bin/pi" ] || [ "$(readlink "$bin/pi")" != 'pi-lazy' ]; }; then
+    printf 'pi changed since installation; refusing to overwrite it. Preserve it before manual recovery.\n' >&2
+    exit 1
+fi
 if [ -e "$bin/pi-lazy" ] && ! grep -q '^# cmux-pi-lazy:' "$bin/pi-lazy"; then
     printf 'Refusing to overwrite an unrelated %s/pi-lazy.\n' "$bin" >&2
     exit 1

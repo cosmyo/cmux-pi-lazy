@@ -53,7 +53,9 @@ An older saved command targeting the real executable directly may bypass the new
 
 ## 3. Replace Pi's eligibility rules
 
-Files/functions to modify: `COMMANDS`, `IMMEDIATE_FLAGS`, and `should_wait()` in `launcher.py`; add tests first.
+Files/functions to modify: `COMMANDS`, `IMMEDIATE_FLAGS`, **`VALUE_OPTIONS` and `cli_options()`**, and `should_wait()` in `launcher.py`; add tests first.
+
+The shared value parser is also Pi-specific: replace its option cardinalities with the target CLI's verified required, optional, and variadic value rules. For example, merely calling `option(args, ("--resume",))` does not make Claude's `--resume` value-taking in Pi's table, and a bare resume-picker flag may legitimately have no value. Codex's `-c` consumes a configuration value, unlike Pi's boolean continue flag. Add exact selector-extraction and flag-looking-value tests before changing the caller.
 
 ### Claude Code
 

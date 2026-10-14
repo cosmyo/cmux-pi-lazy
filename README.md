@@ -47,7 +47,7 @@ The default real Pi is the managed launcher at `~/.pi/agent/bin/pi`. For an npm/
 ./install.sh --pi /absolute/path/to/your/original/pi
 ```
 
-Do not use cmux's per-surface shim, `pi-lazy`, or the newly installed `~/.local/bin/pi` as the real executable. The installer saves the previous local launcher before replacing it; it does not modify cmux, the real Pi installation, shell profiles, private title caches, or running sessions.
+Do not use cmux's per-surface shim, `pi-lazy`, or the newly installed `~/.local/bin/pi` as the real executable. Before replacing anything, the installer resolves the original target and rejects targets that installation would overwrite or make recursive. An original local `pi` symlink to a separate real executable is safe; an original regular executable at a path installation replaces is refused rather than relocated silently. The installer saves the previous local launcher before replacing it; it does not modify cmux, the real Pi installation, shell profiles, private title caches, or running sessions.
 
 Keep typing:
 
@@ -109,7 +109,7 @@ From the checkout:
 
 This restores the saved local launcher only while `~/.local/bin/pi` is still our symlink. It refuses to overwrite a subsequently changed launcher. Inactive helper files and private caches remain for inspection. Existing processes are not stopped.
 
-A Pi installer/update may reset `~/.local/bin/pi`; check `readlink ~/.local/bin/pi`. Re-enable with `./install.sh` if needed, after verifying the real Pi path. A native cmux lazy-restoration setting, once shipped and tested with Pi, is preferable to keeping this workaround indefinitely.
+A Pi installer/update may reset `~/.local/bin/pi`; check `readlink ~/.local/bin/pi`. **If it changed, reinstall refuses to overwrite the replacement**, even when an older backup record exists. Leave the updated CLI in place, or preserve its file/symlink separately before manual recovery; do not delete the backup record to force installation. To use the uninstaller, first preserve the replacement and restore the owned `pi -> pi-lazy` link, then uninstall and choose which preserved launcher to restore before a fresh install. If the resolved real executable moved during an update but the owned link remains intact, rerun `./install.sh --pi <new-real-path>` to update that target. A native cmux lazy-restoration setting, once shipped and tested with Pi, is preferable to keeping this workaround indefinitely.
 
 ## Tests
 
