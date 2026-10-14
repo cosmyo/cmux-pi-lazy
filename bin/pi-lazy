@@ -1,0 +1,11 @@
+#!/bin/sh
+# cmux-pi-lazy: keep the real Pi installation and cmux shims untouched.
+set -eu
+config="$HOME/.local/share/pi-lazy/real-pi"
+if [ -z "${PI_LAZY_REAL_PI+x}" ] && [ -f "$config" ]; then
+    IFS= read -r PI_LAZY_REAL_PI < "$config"
+    export PI_LAZY_REAL_PI
+fi
+PI_LAZY_ENTRYPOINT="$0"
+export PI_LAZY_ENTRYPOINT
+exec /usr/bin/python3 "$HOME/.local/share/pi-lazy/launcher.py" "$@"

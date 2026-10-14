@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pi/
+.qmd/
+.DS_Store
+.env
+.env.*
+titles.json
+real-pi
+original-pi-backup
+*.jsonl
+*.log
