@@ -26,13 +26,23 @@ function makeReporter(env, log) {
   const socketPath = env.CMUX_SOCKET_PATH || join(homedir(), ".local/state/cmux/cmux.sock");
   if (!workspace || !surface) return () => {};
   let queue = Promise.resolve();
-  // Only transitions may be written: every keyed write refreshes cmux's
-  // activity timestamps, so a periodic identical write would both starve
-  // recently_active and defeat hasUnconfirmedTerminalInput. A failed write
-  // resets lastConfirmed so the next evaluation retries it.
+  // Transitions only: every keyed write refreshes cmux's activity timestamps,
+  // so periodic identical writes would starve recently_active and defeat
+  // hasUnconfirmedTerminalInput. A failed write resets confirmation so the
+  // next evaluation retries it.
   let lastConfirmed;
+  let lastSentAt = 0;
+  // Exception: protective states are re-asserted slowly. cmux's Feed can clear
+  // a keyed state when its own attention is consumed, which would otherwise
+  // strand our dedupe and unprotect a live draft/background work until the
+  // next turn. Re-asserting a non-idle state only delays hibernation of a
+  // session that has unfinished business — the intended behavior.
+  const PROTECTIVE = new Set(["needsInput", "backgroundWorkPending", "running"]);
+  const REASSERT_MS = Number(process.env.PI_LAZY_LIFECYCLE_REASSERT_MS) || 60000;
   return (state) => {
-    if (state === lastConfirmed) return queue;
+    const now = Date.now();
+    if (state === lastConfirmed &&
+        !(PROTECTIVE.has(state) && now - lastSentAt >= REASSERT_MS)) return queue;
     queue = queue.then(() => new Promise((resolve) => {
       const sock = new Socket();
       let done = false;
@@ -53,6 +63,7 @@ function makeReporter(env, log) {
               fail();
             } else {
               lastConfirmed = state;
+              lastSentAt = Date.now();
               finish();
             }
           }

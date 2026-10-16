@@ -80,6 +80,7 @@ async function load(h) {
   if (!("PI_LAZY_LIFECYCLE" in h.env)) delete process.env.PI_LAZY_LIFECYCLE;
   if (!("CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS" in h.env)) delete process.env.CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS;
   if (!("PI_LAZY_LIFECYCLE_RECHECK_MS" in h.env)) delete process.env.PI_LAZY_LIFECYCLE_RECHECK_MS;
+  if (!("PI_LAZY_LIFECYCLE_REASSERT_MS" in h.env)) delete process.env.PI_LAZY_LIFECYCLE_REASSERT_MS;
   try {
     const mod = await import(pathToFileURL(extensionPath).href + "?t=" + Math.random());
     mod.default(h.pi);
@@ -234,6 +235,23 @@ test("a lost running write is retried on the next recheck tick", async () => {
   assert.equal(h.received.filter(l => l.includes(" running ")).length, 1); // the dropped one
   await new Promise(r => setTimeout(r, 150)); // next tick must retry it
   assert.ok(h.received.filter(l => l.includes(" running ")).length >= 2, JSON.stringify(h.received));
+  h.cleanup();
+});
+
+test("protective states are slowly re-asserted (guards against cmux-side keyed clears)", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25", PI_LAZY_LIFECYCLE_REASSERT_MS: "80" });
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  h.ctx.editorText = "draft";
+  h.input("d");
+  await new Promise(r => setTimeout(r, 40));
+  const first = h.received.filter(l => l.includes("needsInput")).length;
+  assert.equal(first, 1, JSON.stringify(h.received));
+  // No further transitions; re-assertion must still occur so a cmux-side clear
+  // (e.g. Feed consuming attention) cannot strand the protection.
+  await new Promise(r => setTimeout(r, 250));
+  assert.ok(h.received.filter(l => l.includes("needsInput")).length >= 2, JSON.stringify(h.received));
   h.cleanup();
 });
 
