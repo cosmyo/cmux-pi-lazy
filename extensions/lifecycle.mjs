@@ -26,14 +26,21 @@ function makeReporter(env, log) {
   const socketPath = env.CMUX_SOCKET_PATH || join(homedir(), ".local/state/cmux/cmux.sock");
   if (!workspace || !surface) return () => {};
   let queue = Promise.resolve();
+  // Only transitions may be written: every keyed write refreshes cmux's
+  // activity timestamps, so a periodic identical write would both starve
+  // recently_active and defeat hasUnconfirmedTerminalInput. A failed write
+  // resets lastConfirmed so the next evaluation retries it.
+  let lastConfirmed;
   return (state) => {
+    if (state === lastConfirmed) return queue;
     queue = queue.then(() => new Promise((resolve) => {
       const sock = new Socket();
       let done = false;
       const finish = () => { if (!done) { done = true; sock.destroy(); resolve(); } };
+      const fail = () => { if (!done) { lastConfirmed = undefined; finish(); } };
       sock.setTimeout(3000);
-      sock.once("timeout", finish);
-      sock.once("error", finish);
+      sock.once("timeout", fail);
+      sock.once("error", fail);
       sock.connect(socketPath, () => {
         const cmd = `set_agent_lifecycle ${STATE_KEY} ${state} --tab=${workspace} --panel=${surface}\n`;
         sock.write(cmd);
@@ -41,11 +48,16 @@ function makeReporter(env, log) {
         sock.on("data", (chunk) => {
           buf += chunk.toString();
           if (buf.includes("\n")) {
-            if (!buf.startsWith("OK")) log(`lifecycle report '${state}' rejected: ${buf.trim()}`);
-            finish();
+            if (!buf.startsWith("OK")) {
+              log(`lifecycle report '${state}' rejected: ${buf.trim()}`);
+              fail();
+            } else {
+              lastConfirmed = state;
+              finish();
+            }
           }
         });
-        sock.once("close", finish);
+        sock.once("close", fail);
       });
     }));
     return queue;
@@ -70,7 +82,9 @@ export default function lifecycleReporter(pi) {
   const armRecheck = () => {
     if (recheckTimer) return;
     recheckTimer = setInterval(() => {
-      if (!turnActive) evaluate();
+      // Evaluate unconditionally: also retries a lost transition write (e.g.
+      // running rejected mid-turn) on the next tick.
+      evaluate();
     }, RECHECK_MS);
     recheckTimer.unref?.();
   };

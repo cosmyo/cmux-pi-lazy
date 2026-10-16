@@ -14,6 +14,7 @@ function harness(env = {}) {
   const socketPath = join(dir, "cmux.sock");
   const received = [];
   const connections = new Set();
+  let failNext = false;
   const server = createServer((conn) => {
     connections.add(conn);
     conn.on("close", () => connections.delete(conn));
@@ -25,6 +26,7 @@ function harness(env = {}) {
       for (const line of lines) {
         if (!line) continue;
         received.push(line);
+        if (failNext) { failNext = false; conn.destroy(); continue; }
         conn.write(line.startsWith("set_agent_lifecycle") ? "OK\n" : "ERROR: unknown\n");
       }
     });
@@ -55,6 +57,7 @@ function harness(env = {}) {
   };
   return {
     pi, ctx, received, dir, cleanup,
+    failNextWrite: () => { failNext = true; },
     env: {
       CMUX_WORKSPACE_ID: "ws-uuid", CMUX_SURFACE_ID: "surface-uuid",
       CMUX_SOCKET_PATH: socketPath, ...env,
@@ -204,6 +207,33 @@ test("registry change without a bus event is caught by the recheck", async () =>
     await new Promise(r => setTimeout(r, 120));
     assert.ok(h.received.some(l => l.includes("backgroundWorkPending")), JSON.stringify(h.received));
   } finally { if (old === undefined) delete globalThis[key]; else globalThis[key] = old; }
+  h.cleanup();
+});
+
+test("stable states are not re-written (cmux activity timestamps must not refresh)", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25" });
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  const idleWrites = h.received.filter(l => l.includes(" idle ")).length;
+  assert.equal(idleWrites, 1, JSON.stringify(h.received));
+  await new Promise(r => setTimeout(r, 150)); // several timer ticks, no state change
+  assert.equal(h.received.filter(l => l.includes(" idle ")).length, 1, JSON.stringify(h.received));
+  h.cleanup();
+});
+
+test("a lost running write is retried on the next recheck tick", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25" });
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  assert.equal(h.received.length, 1);
+  h.failNextWrite();                            // socket drops the running write
+  await h.emit("agent_start");
+  await h.settled();
+  assert.equal(h.received.filter(l => l.includes(" running ")).length, 1); // the dropped one
+  await new Promise(r => setTimeout(r, 150)); // next tick must retry it
+  assert.ok(h.received.filter(l => l.includes(" running ")).length >= 2, JSON.stringify(h.received));
   h.cleanup();
 });
 
