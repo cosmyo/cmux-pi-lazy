@@ -76,6 +76,7 @@ async function load(h) {
   Object.assign(process.env, h.env);
   if (!("PI_LAZY_LIFECYCLE" in h.env)) delete process.env.PI_LAZY_LIFECYCLE;
   if (!("CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS" in h.env)) delete process.env.CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS;
+  if (!("PI_LAZY_LIFECYCLE_RECHECK_MS" in h.env)) delete process.env.PI_LAZY_LIFECYCLE_RECHECK_MS;
   try {
     const mod = await import(pathToFileURL(extensionPath).href + "?t=" + Math.random());
     mod.default(h.pi);
@@ -169,6 +170,39 @@ test("work started during a turn still blocks idle at settle (registry checked i
     h.input("x");
     await new Promise(r => setTimeout(r, 30));
     assert.ok(h.received.at(-1).includes("needsInput"), JSON.stringify(h.received));
+  } finally { if (old === undefined) delete globalThis[key]; else globalThis[key] = old; }
+  h.cleanup();
+});
+
+test("programmatic draft (external editor / setEditorText) is caught without input events", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25" });
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  assert.ok(h.received.at(-1).includes(" idle "), JSON.stringify(h.received));
+  // No terminal input, no bus event: an async external-editor return sets the draft.
+  h.ctx.editorText = "restored from editor";
+  await new Promise(r => setTimeout(r, 120));
+  assert.ok(h.received.some(l => l.includes("needsInput")), JSON.stringify(h.received));
+  // And clearing it programmatically returns to idle.
+  h.ctx.editorText = "";
+  await new Promise(r => setTimeout(r, 120));
+  assert.ok(h.received.at(-1).includes(" idle "), JSON.stringify(h.received));
+  h.cleanup();
+});
+
+test("registry change without a bus event is caught by the recheck", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25" });
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  const key = Symbol.for("pi-subagents.background-work.v1");
+  const old = globalThis[key];
+  globalThis[key] = { version: 1, providers: new Map() };
+  try {
+    globalThis[key].providers.set("late", { listActiveWork: () => [{ sessionId: "x", id: "j" }] });
+    await new Promise(r => setTimeout(r, 120));
+    assert.ok(h.received.some(l => l.includes("backgroundWorkPending")), JSON.stringify(h.received));
   } finally { if (old === undefined) delete globalThis[key]; else globalThis[key] = old; }
   h.cleanup();
 });

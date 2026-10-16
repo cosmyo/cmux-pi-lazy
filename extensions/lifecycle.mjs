@@ -61,6 +61,19 @@ export default function lifecycleReporter(pi) {
   let ctx;
   let turnActive = false;
   let draft = false;
+  let recheckTimer;
+  // Programmatic editor writes (external-editor return, ctx.ui.setEditorText)
+  // and provider registration changes produce no terminal-input or bus event.
+  // Re-evaluate on a slow timer; this is an in-process memory read, not a poll
+  // of cmux, and it never spawns work.
+  const RECHECK_MS = Number(process.env.PI_LAZY_LIFECYCLE_RECHECK_MS) || 5000;
+  const armRecheck = () => {
+    if (recheckTimer) return;
+    recheckTimer = setInterval(() => {
+      if (!turnActive) evaluate();
+    }, RECHECK_MS);
+    recheckTimer.unref?.();
+  };
 
   // Registered background work (pi-subagents protocol) blocks hibernation.
   const backgroundCheck = () => {
@@ -105,6 +118,7 @@ export default function lifecycleReporter(pi) {
     if (!value || value.mode !== "tui" || !value.hasUI) return;
     ctx = value;
     turnActive = false;
+    armRecheck();
     evaluate();
   });
 
@@ -142,5 +156,8 @@ export default function lifecycleReporter(pi) {
     pi.events.on(event, () => setTimeout(() => { if (!turnActive) evaluate(); }, 0));
   }
 
-  // If a turn never settles (crash), a later prompt re-reports running; nothing to do on shutdown.
+  pi.on("session_shutdown", () => {
+    if (recheckTimer) { clearInterval(recheckTimer); recheckTimer = undefined; }
+  });
+  // If a turn never settles (crash), a later prompt re-reports running; nothing else on shutdown.
 }
