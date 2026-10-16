@@ -66,7 +66,7 @@ function makeReporter(env, log) {
 
 export default function lifecycleReporter(pi) {
   if (process.env.CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS === "1") return;
-  if (process.env.PI_LAZY_LIFECYCLE === "0") return;
+  if (process.env.PI_LAZY_NATIVE_HIBERNATION === "0" || process.env.PI_LAZY_LIFECYCLE === "0") return;
   const log = (msg) => console.error(`[pi-lazy-lifecycle] ${msg}`);
   const report = makeReporter(process.env, log);
 
@@ -89,17 +89,27 @@ export default function lifecycleReporter(pi) {
     recheckTimer.unref?.();
   };
 
-  // Registered background work (pi-subagents protocol) blocks hibernation.
+  // Registered background work (pi-subagents protocol v1) blocks hibernation.
+  // Mirror the protocol's conservative snapshot semantics: an ABSENT registry
+  // means no registered providers; a PRESENT but malformed one is blocking
+  // uncertainty, and reconcile() must run before listActiveWork().
+  // Returns true (work active) | false (verified none) | undefined (unknown -> block).
   const backgroundCheck = () => {
     const registry = globalThis[Symbol.for("pi-subagents.background-work.v1")];
-    if (!registry || registry.version !== 1 || !(registry.providers instanceof Map)) return false;
+    if (registry === undefined) return false;
+    if (!registry || registry.version !== 1 || !(registry.providers instanceof Map)) return undefined;
     let sessionId;
-    try { sessionId = ctx?.sessionManager.getSessionFile(); } catch { return true; }
+    try { sessionId = ctx?.sessionManager.getSessionFile(); } catch { return undefined; }
     for (const provider of registry.providers.values()) {
       try {
-        const work = provider.listActiveWork({ sessionId, nowMs: Date.now() });
-        if (!Array.isArray(work) || work.length > 0) return true;
-      } catch { return true; }
+        provider.reconcile?.({ sessionId, nowMs: Date.now() });
+      } catch { return undefined; }
+      let work;
+      try {
+        work = provider.listActiveWork({ sessionId, nowMs: Date.now() });
+      } catch { return undefined; }
+      if (!Array.isArray(work)) return undefined;
+      if (work.length > 0) return true;
     }
     return false;
   };
@@ -109,16 +119,30 @@ export default function lifecycleReporter(pi) {
     if (turnActive) { void report("running"); return; }
     try {
       if (ctx.hasPendingMessages()) { void report("running"); return; }
-    } catch { return; }
-    if (backgroundCheck()) { void report("backgroundWorkPending"); return; }
+    } catch {
+      // Probe uncertainty must not preserve a possibly-stale idle.
+      void report("unknown");
+      return;
+    }
+    const work = backgroundCheck();
+    if (work !== false) { void report(work === true ? "backgroundWorkPending" : "unknown"); return; }
     let editor = "";
-    try { editor = ctx.ui.getEditorText(); } catch { return; }
+    try { editor = ctx.ui.getEditorText(); } catch {
+      void report("unknown");
+      return;
+    }
     if (editor !== "") { draft = true; void report("needsInput"); return; }
     draft = false;
     void report("idle");
   };
 
-  const startTurn = (_event, value) => { if (value) ctx = value; turnActive = true; void report("running"); };
+  const startTurn = (_event, value) => {
+    if (value) ctx = value;
+    // Never report from RPC/print contexts, even if cmux ids are present.
+    if (!ctx || ctx.mode !== "tui" || !ctx.hasUI) return;
+    turnActive = true;
+    void report("running");
+  };
   pi.on("agent_start", startTurn);
   pi.on("before_agent_start", startTurn);
 

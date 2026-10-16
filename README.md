@@ -116,16 +116,23 @@ cmux agent-hibernation on
 cmux config set terminal.agentHibernation.idleSeconds 60
 ```
 
-Safety rules (fail-awake everywhere):
+Safety rules (fail-awake on uncertainty):
 
 - A turn in flight or queued messages → `running`.
 - An unsent editor draft → `needsInput` (not hibernatable; protects drafts).
-- Active work registered through the `pi-subagents` background-work protocol → `backgroundWorkPending`.
-- Suppressed/headless child sessions never report.
-- Probe failures keep the last non-idle state; the reporter never sends keystrokes, signals, or shutdowns — it only reports.
-- Sessions already running before installation don't load the reporter until their next start; they stay `unknown` (never auto-hibernated) — safe by default.
+- Active work registered through the `pi-subagents` background-work protocol → `backgroundWorkPending`; a malformed registry or failed reconciliation → blocking `unknown`.
+- Probe failures (editor/queue reads throwing) downgrade to `unknown` rather than preserving a possibly stale `idle`.
+- Failed or rejected socket writes are retried on the next recheck until acknowledged.
+- Suppressed/headless child sessions and non-TUI turn events never report.
+- The reporter never sends keystrokes, signals, or shutdowns — it only reports.
 
-Disable with `./install.sh --no-hibernate` or `PI_LAZY_NATIVE_HIBERNATION=0` per launch. Known limit: extensions with unregistered background work (e.g. a watcher that outlives a turn without registering it) are invisible to the reporter; cmux's census still applies, but enable this only for workloads whose background tasks use the registration protocol.
+**Known limits:**
+
+- *Sustained transport failure*: if the socket drops the reporter's `running` write while a turn runs, cmux's keyed state can keep a stale `idle` for the outage duration (keyed states take precedence over hook fallbacks, and cmux has no server-side freshness/expiry). The recheck retries until acknowledged; only a cmux-side expiry mechanism could fully close this. Assess whether that residual is acceptable for your workload.
+- *Unregistered background work*: extensions whose background tasks do not use the `pi-subagents` registration protocol are invisible to the reporter. cmux's census still applies, but enable this only for workloads whose background tasks register.
+- *Existing sessions*: sessions started before installing the reporter never load it, so they do not gain the draft/background-work guards. However, a session that has completed at least one turn already has an `idle` lifecycle from the stock cmux hooks and **can be hibernated by the global engine without the reporter**. Review existing workloads before running `cmux agent-hibernation on`.
+
+Disable reporter injection with `./install.sh --no-hibernate` or `PI_LAZY_NATIVE_HIBERNATION=0` per launch. This does not disable cmux's global engine; turn that off separately with `cmux agent-hibernation off`.
 
 ## Uninstall
 

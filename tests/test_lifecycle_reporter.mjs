@@ -13,8 +13,10 @@ function harness(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pi-lazy-lifecycle-"));
   const socketPath = join(dir, "cmux.sock");
   const received = [];
+  const accepted = [];   // only commands the fake server actually OK'd
   const connections = new Set();
   let failNext = false;
+  let errorNext = false;
   const server = createServer((conn) => {
     connections.add(conn);
     conn.on("close", () => connections.delete(conn));
@@ -27,6 +29,8 @@ function harness(env = {}) {
         if (!line) continue;
         received.push(line);
         if (failNext) { failNext = false; conn.destroy(); continue; }
+        if (errorNext) { errorNext = false; conn.write("ERROR: rejected\n"); continue; }
+        if (line.startsWith("set_agent_lifecycle")) accepted.push(line);
         conn.write(line.startsWith("set_agent_lifecycle") ? "OK\n" : "ERROR: unknown\n");
       }
     });
@@ -51,13 +55,18 @@ function harness(env = {}) {
     },
   };
   const cleanup = () => {
+    // Stop the extension's recheck interval before tearing down the server.
+    for (const fn of handlers.get("session_shutdown") ?? []) {
+      try { fn({}, ctx); } catch { /* best-effort */ }
+    }
     for (const conn of connections) conn.destroy();
     server.close();
     rmSync(dir, { recursive: true, force: true });
   };
   return {
-    pi, ctx, received, dir, cleanup,
+    pi, ctx, received, accepted, dir, cleanup,
     failNextWrite: () => { failNext = true; },
+    errorNextWrite: () => { errorNext = true; },
     env: {
       CMUX_WORKSPACE_ID: "ws-uuid", CMUX_SURFACE_ID: "surface-uuid",
       CMUX_SOCKET_PATH: socketPath, ...env,
@@ -237,8 +246,111 @@ test("a lost running write is retried on the next recheck tick", async () => {
   h.cleanup();
 });
 
+test("probe failure after acknowledged idle downgrades to unknown", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25" });
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  assert.ok(h.received.at(-1).includes(" idle "));
+  h.ctx.ui.getEditorText = () => { throw new Error("broken"); };
+  await new Promise(r => setTimeout(r, 120));
+  assert.ok(h.received.at(-1).includes("unknown"), JSON.stringify(h.received));
+  h.cleanup();
+});
+
+test("malformed registry and failing reconcile are blocking uncertainty", async () => {
+  const key = Symbol.for("pi-subagents.background-work.v1");
+  const old = globalThis[key];
+  try {
+    for (const registry of [
+      { version: 99, providers: new Map() },
+      { version: 1, providers: new Map([["p", { reconcile: () => { throw new Error("x"); }, listActiveWork: () => [] }]]) },
+    ]) {
+      const h = harness();
+      await load(h);
+      globalThis[key] = registry;
+      await h.emit("session_start");
+      await h.settled();
+      assert.ok(h.received.at(-1).includes("unknown"), JSON.stringify({ registry, received: h.received }));
+      h.cleanup();
+    }
+  } finally { if (old === undefined) delete globalThis[key]; else globalThis[key] = old; }
+});
+
+test("reconcile runs before listActiveWork", async () => {
+  const key = Symbol.for("pi-subagents.background-work.v1");
+  const old = globalThis[key];
+  const calls = [];
+  globalThis[key] = { version: 1, providers: new Map([["p", {
+    reconcile: () => { calls.push("reconcile"); },
+    listActiveWork: () => { calls.push("list"); return []; },
+  }]]) };
+  try {
+    const h = harness();
+    await load(h);
+    await h.emit("session_start");
+    await h.settled();
+    assert.deepEqual(calls, ["reconcile", "list"]);
+    h.cleanup();
+  } finally { if (old === undefined) delete globalThis[key]; else globalThis[key] = old; }
+});
+
+test("explicit ERROR response is logged, resets confirmation, and the next transition recovers", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "25" });
+  const logs = [];
+  const oldError = console.error;
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    await load(h);
+    await h.emit("session_start");
+    await h.settled();
+    assert.equal(h.received.filter(l => l.includes(" idle ")).length, 1);
+    h.errorNextWrite();
+    await h.emit("agent_start");
+    await h.settled();
+    assert.ok(logs.some(l => l.includes("rejected")), JSON.stringify(logs));
+    // The failed write reset confirmation: the recheck retries running.
+    await new Promise(r => setTimeout(r, 120));
+    assert.ok(h.received.filter(l => l.includes(" running ")).length >= 2, JSON.stringify(h.received));
+  } finally {
+    console.error = oldError;
+    h.cleanup();
+  }
+});
+
+test("sustained transport failure leaves stale idle until recovery (documented residual)", async () => {
+  const h = harness({ PI_LAZY_LIFECYCLE_RECHECK_MS: "200" });
+  try {
+    await load(h);
+    await h.emit("session_start");
+    await h.settled();
+    h.failNextWrite();
+    await h.emit("agent_start");   // running write dropped before any recheck tick
+    await h.settled();
+    // During the outage the last ACCEPTED state is still idle (documented residual:
+    // only server-side freshness could close this; cmux has none).
+    assert.deepEqual(h.accepted.map(l => l.split(" ")[2]), ["idle"]);
+    await new Promise(r => setTimeout(r, 350)); // recovery tick retries
+    assert.deepEqual(h.accepted.map(l => l.split(" ")[2]), ["idle", "running"]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("turn events from non-TUI contexts never report", async () => {
+  const h = harness();
+  await load(h);
+  h.ctx.mode = "rpc";
+  await h.emit("session_start");
+  await h.emit("agent_start");
+  await h.emit("agent_settled");
+  await h.settled();
+  assert.equal(h.received.length, 0);
+  h.cleanup();
+});
+
 test("suppressed/headless children and explicit disable never touch the socket", async () => {
-  for (const extra of [{ CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS: "1" }, { PI_LAZY_LIFECYCLE: "0" }]) {
+  for (const extra of [{ CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS: "1" }, { PI_LAZY_NATIVE_HIBERNATION: "0" }]) {
     const h = harness(extra);
     await load(h);
     await h.emit("session_start");
