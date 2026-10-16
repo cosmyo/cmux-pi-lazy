@@ -172,6 +172,25 @@ def wait_for_focus(cmux, env, title):
         stop_events(events)
 
 
+def lifecycle_extension(env):
+    """Return the reporter extension path when native-hibernation integration is on."""
+    enabled = env.get("PI_LAZY_NATIVE_HIBERNATION")
+    if enabled is None:
+        marker = Path.home() / ".local/share/pi-lazy/native-hibernation"
+        try:
+            enabled = marker.read_text().strip() if marker.is_file() else "0"
+        except OSError:
+            enabled = "0"
+    if enabled not in ("1", "true", "yes"):
+        return None
+    path = Path.home() / ".local/share/pi-lazy/extensions/lifecycle.mjs"
+    if not path.is_file():
+        print("[pi-lazy] Native hibernation enabled but lifecycle reporter is missing: "
+              + str(path), file=sys.stderr)
+        return None
+    return str(path)
+
+
 def cancel(signum, _frame):
     raise SystemExit(128 + signum)
 
@@ -211,6 +230,11 @@ def main():
         if inferred and title:
             # Let Pi persist the inferred name via its supported CLI, only after wake.
             args = ["--name", title] + args
+        reporter = lifecycle_extension(os.environ)
+        if reporter:
+            # cmux's engine owns hibernation timing/census/teardown; the reporter
+            # only reports this session's true lifecycle over the local socket.
+            args = ["--extension", reporter] + args
     # Keep cwd, user arguments/environment, the PTY, and Pi's real exit status.
     # The event helper has exited before Pi (or any MCP helper) is started.
     os.execv(real_pi, [real_pi] + args)

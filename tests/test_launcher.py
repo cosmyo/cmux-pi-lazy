@@ -88,7 +88,7 @@ class ProcessTests(unittest.TestCase):
                         CMUX_SURFACE_ID="own", PI_MODEL="preserved-model",
                         CMUX_PI_WRAPPER_SHIM="/original/cmux/pi")
         for key in ("PI_LAZY_BYPASS", "PI_CODING_AGENT", "CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS",
-                    "PI_LAZY_REAL_PI", "PI_LAZY_ENTRYPOINT"):
+                    "PI_LAZY_REAL_PI", "PI_LAZY_ENTRYPOINT", "PI_LAZY_NATIVE_HIBERNATION"):
             self.env.pop(key, None)
         self.state(False)
         self.child = None
@@ -303,6 +303,38 @@ class ProcessTests(unittest.TestCase):
         assert title is not None
         self.assertTrue(all(char.isprintable() for char in title))
         self.assertLessEqual(len(title), 80)
+
+    def test_native_hibernation_loads_reporter_only_when_enabled(self):
+        from launcher import lifecycle_extension
+        marker = self.root / ".local/share/pi-lazy/native-hibernation"
+        extension = self.root / ".local/share/pi-lazy/extensions/lifecycle.mjs"
+        with patch.dict(os.environ, HOME=str(self.root)):
+            self.assertIsNone(lifecycle_extension({}))
+            marker.parent.mkdir(parents=True)
+            marker.write_text("1")
+            self.assertIsNone(lifecycle_extension({}))  # missing extension file: warn, continue
+            extension.parent.mkdir(parents=True)
+            extension.write_text("// reporter")
+            self.assertEqual(lifecycle_extension({}), str(extension))
+            self.assertIsNone(lifecycle_extension({"PI_LAZY_NATIVE_HIBERNATION": "0"}))
+
+    def test_reporter_extension_is_injected_on_wake_when_enabled(self):
+        marker = self.root / ".local/share/pi-lazy/native-hibernation"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("1")
+        extension = marker.parent / "extensions/lifecycle.mjs"
+        extension.parent.mkdir()
+        extension.write_text("// reporter")
+        args = ["--session", "exact-id"]
+        self.start(args)
+        assert self.child is not None
+        self.until(lambda: self.queries() == 1)
+        self.state(True)
+        self.event()
+        self.assertEqual(self.child.wait(timeout=5), 0)
+        self.assertEqual(json.loads((self.root / "launched.json").read_text())["args"],
+                         ["--extension", str(extension), *args])
+        self.assert_helper_reaped()
 
     def test_headless_does_not_subscribe(self):
         self.start(["--mode", "rpc", "--session", "exact-id"], tty=False)

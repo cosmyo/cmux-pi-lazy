@@ -49,6 +49,24 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.bin / "pi"), self.original)
         self.assertTrue(private_cache.exists())
 
+    def test_hibernate_flag_writes_marker_and_preserves_custom_real_pi(self):
+        custom = self.home / "custom-pi"
+        custom.write_text('#!/bin/sh\nprintf "custom-pi"\n')
+        custom.chmod(0o700)
+        self.assertEqual(self.script("install.sh", "--pi", str(custom)).returncode, 0)
+        result = self.script("install.sh", "--hibernate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = self.home / ".local/share/pi-lazy"
+        self.assertEqual((data / "native-hibernation").read_text().strip(), "1")
+        self.assertTrue((data / "extensions/lifecycle.mjs").is_file())
+        self.assertEqual((data / "real-pi").read_text().strip(), str(custom.resolve()))
+        run = subprocess.run([str(self.bin / "pi"), "--version"], env=self.env,
+                             capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.stdout, "custom-pi")
+        self.assertEqual(self.script("install.sh", "--no-hibernate").returncode, 0)
+        self.assertEqual((data / "native-hibernation").read_text().strip(), "0")
+        self.assertEqual((data / "real-pi").read_text().strip(), str(custom.resolve()))
+
     def test_uninstall_refuses_to_overwrite_a_changed_launcher(self):
         self.assertEqual(self.script("install.sh").returncode, 0)
         (self.bin / "pi").unlink()

@@ -9,7 +9,7 @@ A small, event-driven launcher workaround for [cmux](https://github.com/manaflow
 [pi-lazy] Waiting for this tab's focus. Ctrl-C cancels.
 ```
 
-This is a CLI launcher, not a Pi extension or a patch to cmux. It uses cmux's existing Pi shim and public event/identify commands. It **does not** implement hibernation: after a tab has been visited, Pi stays running.
+This is a CLI launcher, not a patch to cmux. It uses cmux's existing Pi shim and public event/identify commands. An **optional** Pi extension can also report accurate session lifecycle (running / idle / needs-input / background-work-pending) to cmux's native Agent Hibernation engine, so already-visited idle tabs are hibernated and woken by cmux itself.
 
 ## Why
 
@@ -98,6 +98,34 @@ chmod 600 ~/.local/share/pi-lazy/titles.json
 Do not overwrite an existing cache accidentally. This project does not scan/index conversations or run QMD, embeddings, or an LLM to generate names. Prepare inferred names separately if you want them. A cache entry retains its optional provenance, but is not sent to a provider by this launcher.
 
 On wake, a cached title is handed to Pi through `--name` **only if no explicit or saved name exists**. Pi then persists that name itself. The launcher never edits raw session logs. Other user arguments, cwd, environment, PTY and Pi's exit status are retained. Existing waiters do not hot-reload updated Python code; new banner/name behavior starts on their next launch.
+
+## Optional: native hibernation integration
+
+cmux 0.65+ ships an Agent Hibernation engine (off-screen + idle + safe process census → graceful stop, wake on focus). For Pi sessions restored by cmux, its lifecycle stays `unknown` until the next turn, so the engine correctly refuses to touch them. The bundled reporter extension (`extensions/lifecycle.mjs`) fixes the signal, not the engine: it reports the session's true state over cmux's local socket (`set_agent_lifecycle`) on turn start, settle, draft edits, and registered background-work changes. cmux keeps owning all timing, safety checks, teardown, and wake.
+
+Enable for new launches:
+
+```sh
+./install.sh --hibernate
+```
+
+Also enable cmux's engine and pick the idle delay there:
+
+```sh
+cmux agent-hibernation on
+cmux config set terminal.agentHibernation.idleSeconds 60
+```
+
+Safety rules (fail-awake everywhere):
+
+- A turn in flight or queued messages → `running`.
+- An unsent editor draft → `needsInput` (not hibernatable; protects drafts).
+- Active work registered through the `pi-subagents` background-work protocol → `backgroundWorkPending`.
+- Suppressed/headless child sessions never report.
+- Probe failures keep the last non-idle state; the reporter never sends keystrokes, signals, or shutdowns — it only reports.
+- Sessions already running before installation don't load the reporter until their next start; they stay `unknown` (never auto-hibernated) — safe by default.
+
+Disable with `./install.sh --no-hibernate` or `PI_LAZY_NATIVE_HIBERNATION=0` per launch. Known limit: extensions with unregistered background work (e.g. a watcher that outlives a turn without registering it) are invisible to the reporter; cmux's census still applies, but enable this only for workloads whose background tasks use the registration protocol.
 
 ## Uninstall
 
