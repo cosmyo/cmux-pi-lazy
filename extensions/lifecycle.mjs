@@ -62,12 +62,28 @@ export default function lifecycleReporter(pi) {
   let turnActive = false;
   let draft = false;
 
+  // Registered background work (pi-subagents protocol) blocks hibernation.
+  const backgroundCheck = () => {
+    const registry = globalThis[Symbol.for("pi-subagents.background-work.v1")];
+    if (!registry || registry.version !== 1 || !(registry.providers instanceof Map)) return false;
+    let sessionId;
+    try { sessionId = ctx?.sessionManager.getSessionFile(); } catch { return true; }
+    for (const provider of registry.providers.values()) {
+      try {
+        const work = provider.listActiveWork({ sessionId, nowMs: Date.now() });
+        if (!Array.isArray(work) || work.length > 0) return true;
+      } catch { return true; }
+    }
+    return false;
+  };
+
   const evaluate = () => {
     if (!ctx || ctx.mode !== "tui" || !ctx.hasUI) return;
     if (turnActive) { void report("running"); return; }
     try {
       if (ctx.hasPendingMessages()) { void report("running"); return; }
     } catch { return; }
+    if (backgroundCheck()) { void report("backgroundWorkPending"); return; }
     let editor = "";
     try { editor = ctx.ui.getEditorText(); } catch { return; }
     if (editor !== "") { draft = true; void report("needsInput"); return; }
@@ -122,27 +138,8 @@ export default function lifecycleReporter(pi) {
   pi.on("session_start", (_event, value) => watchInput(value));
   pi.on("session_switch", (_event, value) => watchInput(value));
 
-  // Registered background work (pi-subagents protocol) blocks hibernation.
-  const backgroundCheck = () => {
-    const registry = globalThis[Symbol.for("pi-subagents.background-work.v1")];
-    if (!registry || registry.version !== 1 || !(registry.providers instanceof Map)) return false;
-    let sessionId;
-    try { sessionId = ctx?.sessionManager.getSessionFile(); } catch { return true; }
-    for (const provider of registry.providers.values()) {
-      try {
-        const work = provider.listActiveWork({ sessionId, nowMs: Date.now() });
-        if (!Array.isArray(work) || work.length > 0) return true;
-      } catch { return true; }
-    }
-    return false;
-  };
-  const evaluateWithBackground = () => {
-    if (turnActive) return;
-    if (backgroundCheck()) void report("backgroundWorkPending");
-    else evaluate();
-  };
   for (const event of ["subagent:async-started", "subagent:async-complete", "subagent:process-terminal"]) {
-    pi.events.on(event, () => setTimeout(evaluateWithBackground, 0));
+    pi.events.on(event, () => setTimeout(() => { if (!turnActive) evaluate(); }, 0));
   }
 
   // If a turn never settles (crash), a later prompt re-reports running; nothing to do on shutdown.

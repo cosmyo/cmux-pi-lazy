@@ -151,6 +151,28 @@ test("registered background work reports backgroundWorkPending", async () => {
   h.cleanup();
 });
 
+test("work started during a turn still blocks idle at settle (registry checked in evaluate)", async () => {
+  const h = harness();
+  await load(h);
+  await h.emit("session_start");
+  await h.settled();
+  const key = Symbol.for("pi-subagents.background-work.v1");
+  const old = globalThis[key];
+  globalThis[key] = { version: 1, providers: new Map([["test", { listActiveWork: () => [{ sessionId: "x", id: "j" }] }]]) };
+  try {
+    await h.emit("agent_start");           // work begins mid-turn; no bus event consumed yet
+    await h.emit("agent_settled");         // settle path must consult the registry
+    await h.settled();
+    assert.ok(h.received.at(-1).includes("backgroundWorkPending"), JSON.stringify(h.received));
+    globalThis[key].providers.clear();
+    h.ctx.editorText = "still typing";      // draft-clear path must also consult the registry
+    h.input("x");
+    await new Promise(r => setTimeout(r, 30));
+    assert.ok(h.received.at(-1).includes("needsInput"), JSON.stringify(h.received));
+  } finally { if (old === undefined) delete globalThis[key]; else globalThis[key] = old; }
+  h.cleanup();
+});
+
 test("suppressed/headless children and explicit disable never touch the socket", async () => {
   for (const extra of [{ CMUX_AGENT_HOOK_SUPPRESS_VISIBLE_MUTATIONS: "1" }, { PI_LAZY_LIFECYCLE: "0" }]) {
     const h = harness(extra);
